@@ -253,16 +253,18 @@ async function pull(){const q=await sb.from("events").select("id,data").eq("owne
 async function sync0(){try{let key="daybook.synced."+USER.id,first=true,dirty=false;try{first=!localStorage.getItem(key);dirty=!!localStorage.getItem("daybook.dirty")}catch(e){}
  if(first||!dirty)await pull();else if(false){}
  pulled=true;try{localStorage.setItem(key,"1")}catch(e){}await push()}catch(e){syncMsg="Sync problem: "+(e.message||e)}render()}
-async function loadPeople(){if(!sb||!USER)return;try{const [o,i]=await Promise.all([sb.from("calendar_shares").select("viewer").eq("owner",USER.id),sb.from("calendar_shares").select("owner").eq("viewer",USER.id)]);
- const ids=[...new Set([...(o.data||[]).map(x=>x.viewer),...(i.data||[]).map(x=>x.owner)])];const nm={};
+async function loadPeople(){if(!sb||!USER)return;try{const [o,i,rq]=await Promise.all([sb.from("calendar_shares").select("viewer").eq("owner",USER.id),sb.from("calendar_shares").select("owner").eq("viewer",USER.id),sb.from("access_requests").select("id,requester,wants_edit").eq("owner",USER.id)]);
+ const ids=[...new Set([...(o.data||[]).map(x=>x.viewer),...(i.data||[]).map(x=>x.owner),...(rq.data||[]).map(x=>x.requester)])];const nm={};
  if(ids.length){const p=await sb.from("profiles").select("id,email,display_name").in("id",ids);(p.data||[]).forEach(x=>nm[x.id]=x)}
- PEOPLE={out:(o.data||[]).map(x=>nm[x.viewer]||{id:x.viewer,email:"unknown"}),inn:(i.data||[]).map(x=>nm[x.owner]||{id:x.owner,email:"unknown"})}}catch(e){}if(S.page==="people")render()}
+ PEOPLE={req:(rq.data||[]).map(x=>Object.assign({},nm[x.requester]||{email:"unknown"},{id:x.id})),out:(o.data||[]).map(x=>nm[x.viewer]||{id:x.viewer,email:"unknown"}),inn:(i.data||[]).map(x=>nm[x.owner]||{id:x.owner,email:"unknown"})}}catch(e){}if(S.page==="people")render()}
 async function viewCal(id,name){const q=await sb.rpc("shared_events",{p_owner:id});if(q.error){alert(q.error.message);return}
  VIEWING={id,name,events:q.data.map(x=>Object.assign({},x.data,{id:x.id,privacy:x.privacy,cat:x.privacy==="line"?"__line":(x.data.cat||"Other")}))};S.page="calendar";S.view="day";S.date=new Date();render()}
 function peopleV(){if(!sb)return '<div class="pad"><div class="card">Cloud features could not load. Check your internet connection and reload.</div></div>';
  if(!USER)return '<div class="pad"><div class="card"><h3 style="margin-top:0">People</h3><p>Sign in to share your calendar and see calendars shared with you.</p><button class="pri" id="openAuth">Sign in / Sign up</button></div></div>';
  const nm=p=>esc(p.display_name||p.email);
  return `<div class="pad"><div class="card"><h3 style="margin-top:0">Share my calendar</h3><label>Friend's email (they need a Daybook account first)<input id="shEmail" type="email"></label><button class="pri" id="shBtn" style="margin-top:8px">Share (view only)</button><div class="err" id="shMsg"></div></div>
+${(PEOPLE.req||[]).length?`<div class="card"><h3 style="margin-top:0">Requests to see my calendar</h3>${PEOPLE.req.map(p=>`<div class="li"><span class="sp">${nm(p)}</span><button data-ok="${p.id}">Approve</button><button data-no="${p.id}">Deny</button></div>`).join("")}</div>`:""}
+<div class="card"><h3 style="margin-top:0">Ask to see someone's calendar</h3><label>Their email (they need a Daybook account)<input id="rqEmail" type="email"></label><button class="pri" id="rqBtn" style="margin-top:8px">Send request</button><div class="err" id="rqMsg"></div></div>
 <div class="card"><h3 style="margin-top:0">Calendars shared with me</h3>${PEOPLE.inn.length?PEOPLE.inn.map(p=>`<div class="li"><span class="sp">${nm(p)}</span><button data-view="${p.id}" data-name="${nm(p)}">View</button></div>`).join(""):"Nobody has shared a calendar with you yet."}</div>
 <div class="card"><h3 style="margin-top:0">People I share with</h3>${PEOPLE.out.length?PEOPLE.out.map(p=>`<div class="li"><span class="sp">${nm(p)}</span><button data-rm="${p.id}">Remove</button></div>`).join(""):"You haven't shared your calendar yet."}</div></div>`}
 function acctV(){return USER?`<h3 style="margin-top:0">Account</h3><p>Signed in as ${esc(USER.email)}</p><p style="color:var(--mut);font-size:12px">${esc(syncMsg||"Syncing...")}</p><button id="soBtn">Sign out</button>`:'<h3 style="margin-top:0">Account</h3><p>Not signed in. Activities are saved only on this device.</p><button class="pri" id="openAuth">Sign in / Sign up</button>'}
@@ -275,6 +277,8 @@ document.addEventListener("click",async ev=>{const t=ev.target;if(!sb||!t.datase
  if(t.id==="openAuth")$("dlgA").showModal();
  else if(t.id==="soBtn"){await push();await sb.auth.signOut();S.events=[];persist();pulled=false;render()}
  else if(t.id==="shBtn"){const q=await sb.rpc("share_calendar",{p_email:$("shEmail").value,p_can_edit:false});await loadPeople();const m=$("shMsg");if(m)m.textContent=q.error?q.error.message:q.data}
+ else if(t.dataset.ok||t.dataset.no){const id=t.dataset.ok||t.dataset.no,q=(PEOPLE.req||[]).find(x=>x.id===id);if(q){let er=null;if(t.dataset.ok){const rr=await sb.from("access_requests").select("requester").eq("id",id).single();if(rr.data){const u=await sb.from("calendar_shares").upsert({owner:USER.id,viewer:rr.data.requester},{onConflict:"owner,viewer"});er=u.error}}if(er)alert(er.message);else await sb.from("access_requests").delete().eq("id",id);loadPeople()}}
+ else if(t.id==="rqBtn"){const q=await sb.rpc("request_access",{p_email:$("rqEmail").value,p_wants_edit:false});const m=$("rqMsg");if(m)m.textContent=q.error?q.error.message:q.data}
  else if(t.dataset.view)viewCal(t.dataset.view,t.dataset.name);
  else if(t.dataset.rm){await sb.from("calendar_shares").delete().eq("owner",USER.id).eq("viewer",t.dataset.rm);loadPeople()}});
 (async()=>{if(!sb)return;sb.auth.onAuthStateChange((ev,ss)=>{USER=ss?ss.user:null;if(USER){if($("dlgA").open)$("dlgA").close();setTimeout(sync0,0)}else{pulled=false;VIEWING=null;render()}});
